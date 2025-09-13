@@ -1,6 +1,6 @@
 using OmEnterpriseBillingWin.Models;
 using OmEnterpriseBillingWin.Data;
-using System.Data.SqlClient;
+using Microsoft.Data.SqlClient;
 
 namespace OmEnterpriseBillingWin.Services
 {
@@ -18,11 +18,11 @@ namespace OmEnterpriseBillingWin.Services
             const string query = "SELECT ItemId, Name, SalePrice, StockQty, MinStockLevel FROM Items";
             return await _dbContext.ExecuteReaderAsync(query, reader => new Item
             {
-                ItemId = reader.GetInt32(0),
-                Name = reader.GetString(1),
-                SalePrice = reader.GetDecimal(2),
-                StockQty = reader.GetInt32(3),
-                MinStockLevel = reader.GetInt32(4)
+                ItemId = DbContext.SafeDataReader.GetSafeInt32(reader, 0),
+                Name = DbContext.SafeDataReader.GetSafeString(reader, 1),
+                SalePrice = DbContext.SafeDataReader.GetSafeDecimal(reader, 2),
+                StockQty = DbContext.SafeDataReader.GetSafeInt32(reader, 3),
+                MinStockLevel = DbContext.SafeDataReader.GetSafeInt32(reader, 4)
             });
         }
 
@@ -33,11 +33,11 @@ namespace OmEnterpriseBillingWin.Services
 
             var items = await _dbContext.ExecuteReaderAsync(query, reader => new Item
             {
-                ItemId = reader.GetInt32(0),
-                Name = reader.GetString(1),
-                SalePrice = reader.GetDecimal(2),
-                StockQty = reader.GetInt32(3),
-                MinStockLevel = reader.GetInt32(4)
+                ItemId = DbContext.SafeDataReader.GetSafeInt32(reader, 0),
+                Name = DbContext.SafeDataReader.GetSafeString(reader, 1),
+                SalePrice = DbContext.SafeDataReader.GetSafeDecimal(reader, 2),
+                StockQty = DbContext.SafeDataReader.GetSafeInt32(reader, 3),
+                MinStockLevel = DbContext.SafeDataReader.GetSafeInt32(reader, 4)
             }, parameters);
 
             return items.FirstOrDefault();
@@ -119,7 +119,7 @@ namespace OmEnterpriseBillingWin.Services
                 throw new InvalidOperationException("Cannot delete item: It has associated sales or purchases.");
             }
 
-            const string deleteQuery = "DELETE FROM Items WHERE Id = @Id";
+            const string deleteQuery = "DELETE FROM Items WHERE ItemId = @Id";
             var rowsAffected = await _dbContext.ExecuteNonQueryAsync(deleteQuery, parameters);
             return rowsAffected > 0;
         }

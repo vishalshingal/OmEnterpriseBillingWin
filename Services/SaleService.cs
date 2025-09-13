@@ -1,4 +1,4 @@
-using System.Data.SqlClient; // Update to Microsoft.Data.SqlClient
+using Microsoft.Data.SqlClient; // Consistent namespace usage
 using OmEnterpriseBillingWin.Models;
 using OmEnterpriseBillingWin.Data;
 
@@ -32,23 +32,23 @@ namespace OmEnterpriseBillingWin.Services
                 LEFT JOIN Items i ON s.ItemId = i.ItemId
                 ORDER BY s.Date DESC";
 
-            try 
+            try
             {
                 var sales = await _dbContext.ExecuteReaderAsync(query, reader => new Sale
                 {
-                    Id = reader.GetInt32(0),
-                    ItemId = reader.GetInt32(1),
-                    Quantity = reader.GetInt32(2),
-                    Price = reader.GetDecimal(3),
-                    Date = reader.GetDateTime(4),
-                    StakeholderId = reader.GetInt32(5),
+                    Id = DbContext.SafeDataReader.GetSafeInt32(reader, 0),
+                    ItemId = DbContext.SafeDataReader.GetSafeInt32(reader, 1),
+                    Quantity = DbContext.SafeDataReader.GetSafeInt32(reader, 2),
+                    Price = DbContext.SafeDataReader.GetSafeDecimal(reader, 3),
+                    Date = DbContext.SafeDataReader.GetSafeDateTime(reader, 4),
+                    StakeholderId = DbContext.SafeDataReader.GetSafeInt32(reader, 5),
                     Item = new Item
                     {
-                        ItemId = reader.GetInt32(1),
-                        Name = reader.GetString(6),
-                        SalePrice = reader.GetDecimal(7),
-                        StockQty = reader.GetInt32(8),
-                        MinStockLevel = reader.GetInt32(9)
+                        ItemId = DbContext.SafeDataReader.GetSafeInt32(reader, 1),
+                        Name = DbContext.SafeDataReader.GetSafeString(reader, 6),
+                        SalePrice = DbContext.SafeDataReader.GetSafeDecimal(reader, 7),
+                        StockQty = DbContext.SafeDataReader.GetSafeInt32(reader, 8),
+                        MinStockLevel = DbContext.SafeDataReader.GetSafeInt32(reader, 9)
                     }
                 });
 
@@ -93,6 +93,7 @@ namespace OmEnterpriseBillingWin.Services
 
             return originalPrice * (1 - discount / 100);
         }
+
         public async Task<decimal> GetTotalSaleAmount(DateTime startDate, DateTime endDate)
         {
             const string query = @"
@@ -121,7 +122,7 @@ namespace OmEnterpriseBillingWin.Services
             sale.Date = sale.Date == default ? DateTime.Now : sale.Date;
             sale.StakeholderId = sale.StakeholderId <= 0 ? 0 : sale.StakeholderId;
 
-            using var connection = new Microsoft.Data.SqlClient.SqlConnection(_dbContext.ConnectionString);
+            using var connection = new SqlConnection(_dbContext.ConnectionString);
             await connection.OpenAsync();
 
             using var transaction = connection.BeginTransaction();
@@ -135,28 +136,45 @@ namespace OmEnterpriseBillingWin.Services
                     throw new InvalidOperationException("Insufficient stock");
                 }
 
-                // Insert sale record
+                // Insert sale record using SqlCommand directly with the transaction
                 const string saleQuery = @"
                     INSERT INTO Sales (ItemId, Quantity, Price, Date, StakeholderId)
                     VALUES (@ItemId, @Quantity, @Price, @Date, @StakeholderId);
                     SELECT SCOPE_IDENTITY();";
 
-                var saleParams = new Dictionary<string, object>
+                using var command = new SqlCommand(saleQuery, connection, transaction);
+                command.Parameters.AddWithValue("@ItemId", sale.ItemId);
+                command.Parameters.AddWithValue("@Quantity", sale.Quantity);
+                command.Parameters.AddWithValue("@Price", sale.Price);
+                command.Parameters.AddWithValue("@Date", sale.Date);
+                command.Parameters.AddWithValue("@StakeholderId", sale.StakeholderId);
+
+                var result = await command.ExecuteScalarAsync();
+                var saleId = Convert.ToInt32(result);
+
+                // Update item stock - if your ItemService doesn't support the new transaction type,
+                // you may need to implement the stock update directly here
+                try
                 {
-                    { "@ItemId", sale.ItemId },
-                    { "@Quantity", sale.Quantity },
-                    { "@Price", sale.Price },
-                    { "@Date", sale.Date },
-                    { "@StakeholderId", sale.StakeholderId }
-                };
+                    await _itemService.UpdateStockAsync(sale.ItemId, -sale.Quantity, transaction);
+                }
+                catch (ArgumentException)
+                {
+                    // If ItemService doesn't support Microsoft.Data.SqlClient.SqlTransaction,
+                    // implement stock update directly
+                    const string stockUpdateQuery = @"
+                        UPDATE Items 
+                        SET StockQty = StockQty + @QuantityChange 
+                        WHERE ItemId = @ItemId";
 
-                var id = await _dbContext.ExecuteScalarAsync<decimal>(saleQuery, saleParams, transaction as System.Data.SqlClient.SqlTransaction);
-
-                // Update item stock using the same transaction
-                await _itemService.UpdateStockAsync(sale.ItemId, -sale.Quantity, transaction as System.Data.SqlClient.SqlTransaction);
+                    using var stockCommand = new SqlCommand(stockUpdateQuery, connection, transaction);
+                    stockCommand.Parameters.AddWithValue("@ItemId", sale.ItemId);
+                    stockCommand.Parameters.AddWithValue("@QuantityChange", -sale.Quantity);
+                    await stockCommand.ExecuteNonQueryAsync();
+                }
 
                 await transaction.CommitAsync();
-                return (int)id;
+                return saleId;
             }
             catch (Exception ex)
             {

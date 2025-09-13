@@ -1,4 +1,4 @@
-using System.Data.SqlClient;
+using Microsoft.Data.SqlClient;
 using System.Data;
 
 namespace OmEnterpriseBillingWin.Data
@@ -11,7 +11,7 @@ namespace OmEnterpriseBillingWin.Data
 
         public DbContext()
         {
-            _connectionString = "Server=localhost\\SQLEXPRESS;Database=OmEnterpriseBilling;Trusted_Connection=True;";
+            _connectionString = "Server=localhost\\SQLEXPRESS;Database=OmEnterpriseBilling;Trusted_Connection=True;TrustServerCertificate=True;";
         }
 
         private SqlConnection CreateConnection()
@@ -29,7 +29,7 @@ namespace OmEnterpriseBillingWin.Data
             return connection;
         }
 
-        public async Task<int> ExecuteNonQueryAsync(string query, IDictionary<string, object>? parameters = null, System.Data.SqlClient.SqlTransaction? transaction = null)
+        public async Task<int> ExecuteNonQueryAsync(string query, IDictionary<string, object>? parameters = null, SqlTransaction? transaction = null)
         {
             var connection = transaction?.Connection ?? await EnsureConnectionOpenAsync(null);
             var shouldDisposeConnection = transaction == null;
@@ -59,7 +59,7 @@ namespace OmEnterpriseBillingWin.Data
             }
         }
 
-        public async Task<T> ExecuteScalarAsync<T>(string query, IDictionary<string, object>? parameters = null, System.Data.SqlClient.SqlTransaction? transaction = null)
+        public async Task<T> ExecuteScalarAsync<T>(string query, IDictionary<string, object>? parameters = null, SqlTransaction? transaction = null)
         {
             var connection = transaction?.Connection ?? await EnsureConnectionOpenAsync(null);
             var shouldDisposeConnection = transaction == null;
@@ -81,7 +81,18 @@ namespace OmEnterpriseBillingWin.Data
                 }
 
                 var result = await command.ExecuteScalarAsync();
-                return result == DBNull.Value ? default : (T)result;
+                if (result == null || result == DBNull.Value)
+                {
+                    return default(T);
+                }
+
+                // Handle type conversion
+                if (typeof(T) == typeof(decimal) && result is not decimal)
+                {
+                    return (T)Convert.ChangeType(result, typeof(T));
+                }
+
+                return (T)result;
             }
             finally
             {
@@ -90,7 +101,7 @@ namespace OmEnterpriseBillingWin.Data
             }
         }
 
-        public async Task<List<T>> ExecuteReaderAsync<T>(string query, Func<SqlDataReader, T> mapper, IDictionary<string, object>? parameters = null, System.Data.SqlClient.SqlTransaction? transaction = null)
+        public async Task<List<T>> ExecuteReaderAsync<T>(string query, Func<SqlDataReader, T> mapper, IDictionary<string, object>? parameters = null, SqlTransaction? transaction = null)
         {
             var connection = transaction?.Connection ?? await EnsureConnectionOpenAsync(null);
             var shouldDisposeConnection = transaction == null;
@@ -115,7 +126,16 @@ namespace OmEnterpriseBillingWin.Data
                 using var reader = await command.ExecuteReaderAsync();
                 while (await reader.ReadAsync())
                 {
-                    results.Add(mapper(reader));
+                    try
+                    {
+                        results.Add(mapper(reader));
+                    }
+                    catch (Exception ex)
+                    {
+                        System.Diagnostics.Debug.WriteLine($"Error mapping reader: {ex.Message}");
+                        // Skip this row and continue
+                        continue;
+                    }
                 }
 
                 return results;
@@ -125,6 +145,47 @@ namespace OmEnterpriseBillingWin.Data
                 if (shouldDisposeConnection)
                     await connection.DisposeAsync();
             }
+        }
+
+        // Helper methods for safe data reading
+        public static class SafeDataReader
+        {
+            public static string GetSafeString(SqlDataReader reader, int ordinal)
+            {
+                return reader.IsDBNull(ordinal) ? string.Empty : reader.GetString(ordinal);
+            }
+
+            public static int GetSafeInt32(SqlDataReader reader, int ordinal)
+            {
+                return reader.IsDBNull(ordinal) ? 0 : reader.GetInt32(ordinal);
+            }
+
+            public static decimal GetSafeDecimal(SqlDataReader reader, int ordinal)
+            {
+                return reader.IsDBNull(ordinal) ? 0m : reader.GetDecimal(ordinal);
+            }
+
+            public static DateTime GetSafeDateTime(SqlDataReader reader, int ordinal)
+            {
+                return reader.IsDBNull(ordinal) ? DateTime.MinValue : reader.GetDateTime(ordinal);
+            }
+
+            public static bool GetSafeBool(SqlDataReader reader, int ordinal)
+            {
+                return !reader.IsDBNull(ordinal) && reader.GetBoolean(ordinal);
+            }
+        }
+
+        // Overload for ExecuteReaderAsync without parameters
+        public async Task<List<T>> ExecuteReaderAsync<T>(string query, Func<SqlDataReader, T> mapper)
+        {
+            return await ExecuteReaderAsync(query, mapper, null, null);
+        }
+
+        // Overload for ExecuteScalarAsync without parameters
+        public async Task<T> ExecuteScalarAsync<T>(string query)
+        {
+            return await ExecuteScalarAsync<T>(query, null, null);
         }
     }
 }

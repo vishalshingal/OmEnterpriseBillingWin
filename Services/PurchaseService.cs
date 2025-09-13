@@ -1,6 +1,6 @@
 using OmEnterpriseBillingWin.Models;
 using OmEnterpriseBillingWin.Data;
-using System.Data.SqlClient;
+using Microsoft.Data.SqlClient;
 
 namespace OmEnterpriseBillingWin.Services
 {
@@ -18,27 +18,35 @@ namespace OmEnterpriseBillingWin.Services
         public async Task<List<Purchase>> GetAllPurchasesAsync()
         {
             const string query = @"
-                SELECT p.PurchaseID, p.ItemId, p.Quantity, p.Price, p.Date, p.Seller,
-                       i.Name, i.SalePrice, i.StockQty, i.MinStockLevel
+                SELECT ISNULL(p.PurchaseID, 0) as PurchaseID,
+                       ISNULL(p.ItemId, 0) as ItemId,
+                       ISNULL(p.Quantity, 0) as Quantity,
+                       ISNULL(p.Price, 0) as Price,
+                       ISNULL(p.Date, GETDATE()) as Date,
+                       ISNULL(p.Seller, '') as Seller,
+                       ISNULL(i.Name, 'Unknown') as Name,
+                       ISNULL(i.SalePrice, 0) as SalePrice,
+                       ISNULL(i.StockQty, 0) as StockQty,
+                       ISNULL(i.MinStockLevel, 0) as MinStockLevel
                 FROM Purchases p
-                JOIN Items i ON p.ItemId = i.ItemId
+                LEFT JOIN Items i ON p.ItemId = i.ItemId
                 ORDER BY p.Date DESC";
 
             return await _dbContext.ExecuteReaderAsync(query, reader => new Purchase
             {
-                Id = reader.GetInt32(0),
-                ItemId = reader.GetInt32(1),
-                Quantity = reader.GetInt32(2),
-                Price = reader.GetDecimal(3),
-                Date = reader.GetDateTime(4),
-                Seller = reader.GetString(5),
+                Id = DbContext.SafeDataReader.GetSafeInt32(reader, 0),
+                ItemId = DbContext.SafeDataReader.GetSafeInt32(reader, 1),
+                Quantity = DbContext.SafeDataReader.GetSafeInt32(reader, 2),
+                Price = DbContext.SafeDataReader.GetSafeDecimal(reader, 3),
+                Date = DbContext.SafeDataReader.GetSafeDateTime(reader, 4),
+                Seller = DbContext.SafeDataReader.GetSafeString(reader, 5),
                 Item = new Item
                 {
-                    ItemId = reader.GetInt32(1),
-                    Name = reader.GetString(6),
-                    SalePrice = reader.GetDecimal(7),
-                    StockQty = reader.GetInt32(8),
-                    MinStockLevel = reader.GetInt32(9)
+                    ItemId = DbContext.SafeDataReader.GetSafeInt32(reader, 1),
+                    Name = DbContext.SafeDataReader.GetSafeString(reader, 6),
+                    SalePrice = DbContext.SafeDataReader.GetSafeDecimal(reader, 7),
+                    StockQty = DbContext.SafeDataReader.GetSafeInt32(reader, 8),
+                    MinStockLevel = DbContext.SafeDataReader.GetSafeInt32(reader, 9)
                 }
             });
         }
@@ -71,6 +79,15 @@ namespace OmEnterpriseBillingWin.Services
 
         public async Task<int> AddPurchaseAsync(Purchase purchase)
         {
+            // Validate purchase object
+            if (purchase == null)
+                throw new ArgumentNullException(nameof(purchase));
+
+            // Ensure required properties have valid values
+            purchase.Quantity = purchase.Quantity <= 0 ? 1 : purchase.Quantity;
+            purchase.Price = purchase.Price < 0 ? 0 : purchase.Price;
+            purchase.Date = purchase.Date == default ? DateTime.Now : purchase.Date;
+
             using var connection = new SqlConnection(_dbContext.ConnectionString);
             await connection.OpenAsync();
 
@@ -80,8 +97,8 @@ namespace OmEnterpriseBillingWin.Services
             {
                 // Insert purchase record
                 const string purchaseQuery = @"
-                    INSERT INTO Purchases (ItemId, Quantity, Price, Date, StakeholderId)
-                    VALUES (@ItemId, @Quantity, @Price, @Date, @StakeholderId);
+                    INSERT INTO Purchases (ItemId, Quantity, Price, Date, Seller)
+                    VALUES (@ItemId, @Quantity, @Price, @Date, @Seller);
                     SELECT SCOPE_IDENTITY();";
 
                 var purchaseParams = new Dictionary<string, object>
@@ -90,21 +107,22 @@ namespace OmEnterpriseBillingWin.Services
                     { "@Quantity", purchase.Quantity },
                     { "@Price", purchase.Price },
                     { "@Date", purchase.Date },
-                    { "@StakeholderId", purchase.StakeholderId }
+                    { "@Seller", purchase.Seller ?? string.Empty }
                 };
 
                 // Use the same connection for all operations
                 var id = await _dbContext.ExecuteScalarAsync<decimal>(purchaseQuery, purchaseParams, transaction);
 
-                // Update item stock using the same transaction
+                // Update item stock using the same transaction (positive quantity to increase stock)
                 await _itemService.UpdateStockAsync(purchase.ItemId, purchase.Quantity, transaction);
 
                 await transaction.CommitAsync();
                 return (int)id;
             }
-            catch
+            catch (Exception ex)
             {
                 await transaction.RollbackAsync();
+                System.Diagnostics.Debug.WriteLine($"Error in AddPurchaseAsync: {ex.Message}");
                 throw;
             }
         }
