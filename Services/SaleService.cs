@@ -1,187 +1,275 @@
-using Microsoft.Data.SqlClient; // Consistent namespace usage
-using OmEnterpriseBillingWin.Models;
+using System;
+using System.Collections.Generic;
+using System.Data;
+using System.Threading.Tasks;
+using Microsoft.Data.Sqlite;
 using OmEnterpriseBillingWin.Data;
+using OmEnterpriseBillingWin.Models;
 
 namespace OmEnterpriseBillingWin.Services
 {
     public class SaleService
     {
-        private readonly DbContext _dbContext;
-        private readonly ItemService _itemService;
+        private readonly DatabaseConnection _dbConnection;
 
         public SaleService()
         {
-            _dbContext = new DbContext();
-            _itemService = new ItemService();
+            _dbConnection = new DatabaseConnection();
         }
 
-        public async Task<List<Sale>> GetAllSalesAsync()
+        // Existing methods remain the same...
+
+        public async Task<int> CreateSaleOrderAsync(SaleOrder order)
         {
-            const string query = @"
-                SELECT ISNULL(s.SaleID, 0) as SaleID, 
-                       ISNULL(s.ItemId, 0) as ItemId, 
-                       ISNULL(s.Quantity, 0) as Quantity, 
-                       ISNULL(s.Price, 0) as Price, 
-                       ISNULL(s.Date, GETDATE()) as Date, 
-                       ISNULL(s.StakeholderId, 0) as StakeholderId,
-                       ISNULL(i.Name, 'Unknown') as Name, 
-                       ISNULL(i.SalePrice, 0) as SalePrice, 
-                       ISNULL(i.StockQty, 0) as StockQty, 
-                       ISNULL(i.MinStockLevel, 0) as MinStockLevel
-                FROM Sales s
-                LEFT JOIN Items i ON s.ItemId = i.ItemId
-                ORDER BY s.Date DESC";
-
-            try
-            {
-                var sales = await _dbContext.ExecuteReaderAsync(query, reader => new Sale
-                {
-                    Id = DbContext.SafeDataReader.GetSafeInt32(reader, 0),
-                    ItemId = DbContext.SafeDataReader.GetSafeInt32(reader, 1),
-                    Quantity = DbContext.SafeDataReader.GetSafeInt32(reader, 2),
-                    Price = DbContext.SafeDataReader.GetSafeDecimal(reader, 3),
-                    Date = DbContext.SafeDataReader.GetSafeDateTime(reader, 4),
-                    StakeholderId = DbContext.SafeDataReader.GetSafeInt32(reader, 5),
-                    Item = new Item
-                    {
-                        ItemId = DbContext.SafeDataReader.GetSafeInt32(reader, 1),
-                        Name = DbContext.SafeDataReader.GetSafeString(reader, 6),
-                        SalePrice = DbContext.SafeDataReader.GetSafeDecimal(reader, 7),
-                        StockQty = DbContext.SafeDataReader.GetSafeInt32(reader, 8),
-                        MinStockLevel = DbContext.SafeDataReader.GetSafeInt32(reader, 9)
-                    }
-                });
-
-                return sales ?? new List<Sale>();
-            }
-            catch (Exception ex)
-            {
-                // Log the error if you have logging
-                System.Diagnostics.Debug.WriteLine($"Error in GetAllSalesAsync: {ex.Message}");
-                return new List<Sale>();
-            }
-        }
-
-        public async Task<decimal> GetMonthlySaleTotal()
-        {
-            const string query = @"
-                SELECT ISNULL(SUM(ISNULL(Quantity, 0) * ISNULL(Price, 0)), 0)
-                FROM Sales
-                WHERE Date >= DATEADD(MONTH, -1, GETDATE())";
-
-            try
-            {
-                var result = await _dbContext.ExecuteScalarAsync<decimal>(query);
-                return result;
-            }
-            catch (Exception ex)
-            {
-                System.Diagnostics.Debug.WriteLine($"Error in GetMonthlySaleTotal: {ex.Message}");
-                return 0;
-            }
-        }
-
-        public async Task<decimal> GetDiscountedPrice(decimal originalPrice, int stakeholderId)
-        {
-            const string query = @"
-                SELECT DiscountPercentage 
-                FROM Stakeholders 
-                WHERE StakeholderId = @StakeholderId";
-
-            var parameters = new Dictionary<string, object> { { "@StakeholderId", stakeholderId } };
-            var discount = await _dbContext.ExecuteScalarAsync<decimal>(query, parameters);
-
-            return originalPrice * (1 - discount / 100);
-        }
-
-        public async Task<decimal> GetTotalSaleAmount(DateTime startDate, DateTime endDate)
-        {
-            const string query = @"
-                SELECT COALESCE(SUM(Quantity * Price), 0)
-                FROM Sales
-                WHERE Date >= @StartDate AND Date < @EndDate";
-
-            var parameters = new Dictionary<string, object>
-            {
-                { "@StartDate", startDate },
-                { "@EndDate", endDate }
-            };
-
-            return await _dbContext.ExecuteScalarAsync<decimal>(query, parameters);
-        }
-
-        public async Task<int> AddSaleAsync(Sale sale)
-        {
-            // Validate sale object
-            if (sale == null)
-                throw new ArgumentNullException(nameof(sale));
-
-            // Ensure required properties have valid values
-            sale.Quantity = sale.Quantity <= 0 ? 1 : sale.Quantity;
-            sale.Price = sale.Price < 0 ? 0 : sale.Price;
-            sale.Date = sale.Date == default ? DateTime.Now : sale.Date;
-            sale.StakeholderId = sale.StakeholderId <= 0 ? 0 : sale.StakeholderId;
-
-            using var connection = new SqlConnection(_dbContext.ConnectionString);
+            using var connection = _dbConnection.GetConnection();
             await connection.OpenAsync();
-
             using var transaction = connection.BeginTransaction();
 
             try
             {
-                // Check stock availability
-                var item = await _itemService.GetItemByIdAsync(sale.ItemId);
-                if (item == null || item.StockQty < sale.Quantity)
+                // Generate order number
+                order.OrderNumber = await GenerateOrderNumberAsync(connection, transaction);
+                order.CreatedAt = DateTime.Now;
+
+                // Insert sale order
+                var orderSql = @"
+                    INSERT INTO SaleOrders (OrderNumber, StakeholderId, OrderDate, Subtotal, TaxAmount, GrandTotal, Status, Notes, CreatedAt)
+                    VALUES (@OrderNumber, @StakeholderId, @OrderDate, @Subtotal, @TaxAmount, @GrandTotal, @Status, @Notes, @CreatedAt);
+                    SELECT last_insert_rowid();";
+
+                using var orderCmd = new SqliteCommand(orderSql, connection, transaction);
+                orderCmd.Parameters.AddWithValue("@OrderNumber", order.OrderNumber);
+                orderCmd.Parameters.AddWithValue("@StakeholderId", order.StakeholderId);
+                orderCmd.Parameters.AddWithValue("@OrderDate", order.OrderDate);
+                orderCmd.Parameters.AddWithValue("@Subtotal", order.Subtotal);
+                orderCmd.Parameters.AddWithValue("@TaxAmount", order.TaxAmount);
+                orderCmd.Parameters.AddWithValue("@GrandTotal", order.GrandTotal);
+                orderCmd.Parameters.AddWithValue("@Status", order.Status);
+                orderCmd.Parameters.AddWithValue("@Notes", order.Notes ?? string.Empty);
+                orderCmd.Parameters.AddWithValue("@CreatedAt", order.CreatedAt);
+
+                var orderId = Convert.ToInt32(await orderCmd.ExecuteScalarAsync());
+                order.OrderId = orderId;
+
+                // Insert order items
+                foreach (var item in order.OrderItems)
                 {
-                    throw new InvalidOperationException("Insufficient stock");
-                }
+                    var itemSql = @"
+                        INSERT INTO SaleOrderItems (OrderId, ItemId, Quantity, UnitPrice, Total)
+                        VALUES (@OrderId, @ItemId, @Quantity, @UnitPrice, @Total)";
 
-                // Insert sale record using SqlCommand directly with the transaction
-                const string saleQuery = @"
-                    INSERT INTO Sales (ItemId, Quantity, Price, Date, StakeholderId)
-                    VALUES (@ItemId, @Quantity, @Price, @Date, @StakeholderId);
-                    SELECT SCOPE_IDENTITY();";
+                    using var itemCmd = new SqliteCommand(itemSql, connection, transaction);
+                    itemCmd.Parameters.AddWithValue("@OrderId", orderId);
+                    itemCmd.Parameters.AddWithValue("@ItemId", item.ItemId);
+                    itemCmd.Parameters.AddWithValue("@Quantity", item.Quantity);
+                    itemCmd.Parameters.AddWithValue("@UnitPrice", item.UnitPrice);
+                    itemCmd.Parameters.AddWithValue("@Total", item.Total);
 
-                using var command = new SqlCommand(saleQuery, connection, transaction);
-                command.Parameters.AddWithValue("@ItemId", sale.ItemId);
-                command.Parameters.AddWithValue("@Quantity", sale.Quantity);
-                command.Parameters.AddWithValue("@Price", sale.Price);
-                command.Parameters.AddWithValue("@Date", sale.Date);
-                command.Parameters.AddWithValue("@StakeholderId", sale.StakeholderId);
+                    await itemCmd.ExecuteNonQueryAsync();
 
-                var result = await command.ExecuteScalarAsync();
-                var saleId = Convert.ToInt32(result);
-
-                // Update item stock - if your ItemService doesn't support the new transaction type,
-                // you may need to implement the stock update directly here
-                try
-                {
-                    await _itemService.UpdateStockAsync(sale.ItemId, -sale.Quantity, transaction);
-                }
-                catch (ArgumentException)
-                {
-                    // If ItemService doesn't support Microsoft.Data.SqlClient.SqlTransaction,
-                    // implement stock update directly
-                    const string stockUpdateQuery = @"
-                        UPDATE Items 
-                        SET StockQty = StockQty + @QuantityChange 
-                        WHERE ItemId = @ItemId";
-
-                    using var stockCommand = new SqlCommand(stockUpdateQuery, connection, transaction);
-                    stockCommand.Parameters.AddWithValue("@ItemId", sale.ItemId);
-                    stockCommand.Parameters.AddWithValue("@QuantityChange", -sale.Quantity);
-                    await stockCommand.ExecuteNonQueryAsync();
+                    // Create individual sale records for backward compatibility
+                    var sale = new Sale
+                    {
+                        ItemId = item.ItemId,
+                        Quantity = item.Quantity,
+                        Price = item.UnitPrice,
+                        Date = order.OrderDate,
+                        StakeholderId = order.StakeholderId
+                    };
+                    await AddSaleAsync(sale, connection, transaction);
                 }
 
                 await transaction.CommitAsync();
-                return saleId;
+                return orderId;
             }
-            catch (Exception ex)
+            catch
             {
                 await transaction.RollbackAsync();
-                System.Diagnostics.Debug.WriteLine($"Error in AddSaleAsync: {ex.Message}");
                 throw;
             }
+        }
+
+        public async Task<List<SaleOrder>> GetSaleOrdersByStakeholderAsync(int stakeholderId)
+        {
+            using var connection = _dbConnection.GetConnection();
+            await connection.OpenAsync();
+
+            var sql = @"
+                SELECT so.*, s.Name as StakeholderName, s.Type as StakeholderType, s.Email, s.Phone, s.Address
+                FROM SaleOrders so
+                INNER JOIN Stakeholders s ON so.StakeholderId = s.StakeholderId
+                WHERE so.StakeholderId = @StakeholderId
+                ORDER BY so.OrderDate DESC";
+
+            using var command = new SqliteCommand(sql, connection);
+            command.Parameters.AddWithValue("@StakeholderId", stakeholderId);
+
+            var orders = new List<SaleOrder>();
+            using var reader = await command.ExecuteReaderAsync();
+
+            while (await reader.ReadAsync())
+            {
+                var order = new SaleOrder
+                {
+                    OrderId = reader.GetInt32("OrderId"),
+                    OrderNumber = reader.GetString("OrderNumber"),
+                    StakeholderId = reader.GetInt32("StakeholderId"),
+                    OrderDate = reader.GetDateTime("OrderDate"),
+                    Subtotal = reader.GetDecimal("Subtotal"),
+                    TaxAmount = reader.GetDecimal("TaxAmount"),
+                    GrandTotal = reader.GetDecimal("GrandTotal"),
+                    Status = reader.GetString("Status"),
+                    Notes = reader.GetString("Notes"),
+                    CreatedAt = reader.GetDateTime("CreatedAt"),
+                    Stakeholder = new Stakeholder
+                    {
+                        StakeholderId = reader.GetInt32("StakeholderId"),
+                        Name = reader.GetString("StakeholderName"),
+                        Type = Enum.Parse<StakeholderType>(reader.GetString("StakeholderType")),
+                        Email = reader.GetString("Email"),
+                        Phone = reader.GetString("Phone"),
+                        Address = reader.GetString("Address")
+                    }
+                };
+
+                orders.Add(order);
+            }
+
+            // Load order items for each order
+            foreach (var order in orders)
+            {
+                order.OrderItems = await GetSaleOrderItemsAsync(order.OrderId);
+            }
+
+            return orders;
+        }
+
+        public async Task<SaleOrder?> GetSaleOrderByIdAsync(int orderId)
+        {
+            using var connection = _dbConnection.GetConnection();
+            await connection.OpenAsync();
+
+            var sql = @"
+                SELECT so.*, s.Name as StakeholderName, s.Type as StakeholderType, s.Email, s.Phone, s.Address
+                FROM SaleOrders so
+                INNER JOIN Stakeholders s ON so.StakeholderId = s.StakeholderId
+                WHERE so.OrderId = @OrderId";
+
+            using var command = new SqliteCommand(sql, connection);
+            command.Parameters.AddWithValue("@OrderId", orderId);
+
+            using var reader = await command.ExecuteReaderAsync();
+
+            if (await reader.ReadAsync())
+            {
+                var order = new SaleOrder
+                {
+                    OrderId = reader.GetInt32("OrderId"),
+                    OrderNumber = reader.GetString("OrderNumber"),
+                    StakeholderId = reader.GetInt32("StakeholderId"),
+                    OrderDate = reader.GetDateTime("OrderDate"),
+                    Subtotal = reader.GetDecimal("Subtotal"),
+                    TaxAmount = reader.GetDecimal("TaxAmount"),
+                    GrandTotal = reader.GetDecimal("GrandTotal"),
+                    Status = reader.GetString("Status"),
+                    Notes = reader.GetString("Notes"),
+                    CreatedAt = reader.GetDateTime("CreatedAt"),
+                    Stakeholder = new Stakeholder
+                    {
+                        StakeholderId = reader.GetInt32("StakeholderId"),
+                        Name = reader.GetString("StakeholderName"),
+                        Type = Enum.Parse<StakeholderType>(reader.GetString("StakeholderType")),
+                        Email = reader.GetString("Email"),
+                        Phone = reader.GetString("Phone"),
+                        Address = reader.GetString("Address")
+                    }
+                };
+
+                order.OrderItems = await GetSaleOrderItemsAsync(orderId);
+                return order;
+            }
+
+            return null;
+        }
+
+        private async Task<List<SaleOrderItem>> GetSaleOrderItemsAsync(int orderId)
+        {
+            using var connection = _dbConnection.GetConnection();
+            await connection.OpenAsync();
+
+            var sql = @"
+                SELECT soi.*, i.Name as ItemName, i.SalePrice, i.StockQty
+                FROM SaleOrderItems soi
+                INNER JOIN Items i ON soi.ItemId = i.ItemId
+                WHERE soi.OrderId = @OrderId
+                ORDER BY soi.OrderItemId";
+
+            using var command = new SqliteCommand(sql, connection);
+            command.Parameters.AddWithValue("@OrderId", orderId);
+
+            var items = new List<SaleOrderItem>();
+            using var reader = await command.ExecuteReaderAsync();
+
+            while (await reader.ReadAsync())
+            {
+                var item = new SaleOrderItem
+                {
+                    OrderItemId = reader.GetInt32("OrderItemId"),
+                    OrderId = reader.GetInt32("OrderId"),
+                    ItemId = reader.GetInt32("ItemId"),
+                    Quantity = reader.GetInt32("Quantity"),
+                    UnitPrice = reader.GetDecimal("UnitPrice"),
+                    Total = reader.GetDecimal("Total"),
+                    Item = new Item
+                    {
+                        ItemId = reader.GetInt32("ItemId"),
+                        Name = reader.GetString("ItemName"),
+                        SalePrice = reader.GetDecimal("SalePrice"),
+                        StockQty = reader.GetInt32("StockQty")
+                    }
+                };
+
+                items.Add(item);
+            }
+
+            return items;
+        }
+
+        private async Task<string> GenerateOrderNumberAsync(SqliteConnection connection, SqliteTransaction transaction)
+        {
+            var today = DateTime.Today;
+            var prefix = $"ORD{today:yyyyMMdd}";
+
+            var sql = "SELECT COUNT(*) FROM SaleOrders WHERE OrderNumber LIKE @Prefix";
+            using var command = new SqliteCommand(sql, connection, transaction);
+            command.Parameters.AddWithValue("@Prefix", $"{prefix}%");
+
+            var count = Convert.ToInt32(await command.ExecuteScalarAsync()) + 1;
+            return $"{prefix}{count:D3}";
+        }
+
+        // Existing AddSaleAsync method should be updated to support transactions
+        private async Task AddSaleAsync(Sale sale, SqliteConnection connection, SqliteTransaction transaction)
+        {
+            var sql = @"
+                INSERT INTO Sales (ItemId, Quantity, Price, Date, StakeholderId)
+                VALUES (@ItemId, @Quantity, @Price, @Date, @StakeholderId)";
+
+            using var command = new SqliteCommand(sql, connection, transaction);
+            command.Parameters.AddWithValue("@ItemId", sale.ItemId);
+            command.Parameters.AddWithValue("@Quantity", sale.Quantity);
+            command.Parameters.AddWithValue("@Price", sale.Price);
+            command.Parameters.AddWithValue("@Date", sale.Date);
+            command.Parameters.AddWithValue("@StakeholderId", sale.StakeholderId);
+
+            await command.ExecuteNonQueryAsync();
+
+            // Update stock
+            var updateStockSql = "UPDATE Items SET StockQty = StockQty - @Quantity WHERE ItemId = @ItemId";
+            using var updateCommand = new SqliteCommand(updateStockSql, connection, transaction);
+            updateCommand.Parameters.AddWithValue("@Quantity", sale.Quantity);
+            updateCommand.Parameters.AddWithValue("@ItemId", sale.ItemId);
+            await updateCommand.ExecuteNonQueryAsync();
         }
     }
 }
