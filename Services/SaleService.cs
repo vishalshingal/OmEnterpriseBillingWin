@@ -249,7 +249,7 @@ namespace OmEnterpriseBillingWin.Services
         }
 
         // Existing AddSaleAsync method should be updated to support transactions
-        private async Task AddSaleAsync(Sale sale, SqliteConnection connection, SqliteTransaction transaction)
+        public async Task AddSaleAsync(Sale sale, SqliteConnection connection, SqliteTransaction transaction)
         {
             var sql = @"
                 INSERT INTO Sales (ItemId, Quantity, Price, Date, StakeholderId)

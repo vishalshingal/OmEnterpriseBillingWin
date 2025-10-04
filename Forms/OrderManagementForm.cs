@@ -17,15 +17,30 @@ namespace OmEnterpriseBillingWin
         public OrderManagementForm()
         {
             InitializeComponent();
+
+            // Initialize services and data
             _stakeholderService = new StakeholderService();
             _saleService = new SaleService();
             _stakeholders = new List<Stakeholder>();
             _orders = new List<SaleOrder>();
-            LoadStakeholders();
+
+            // Wire up event handlers AFTER InitializeComponent
+            this.Load += OrderManagementForm_Load;
+            cboStakeholders.SelectedIndexChanged += cboStakeholders_SelectedIndexChanged;
+            btnRefresh.Click += btnRefresh_Click;
+            btnViewOrder.Click += btnViewOrder_Click;
+            btnClose.Click += btnClose_Click;
+            dgvOrders.SelectionChanged += DgvOrders_SelectionChanged;
+            dgvOrders.DoubleClick += DgvOrders_DoubleClick;
+        }
+
+        private async void OrderManagementForm_Load(object sender, EventArgs e)
+        {
+            await LoadStakeholders();
             SetupGrids();
         }
 
-        private async void LoadStakeholders()
+        private async System.Threading.Tasks.Task LoadStakeholders()
         {
             try
             {
@@ -35,7 +50,7 @@ namespace OmEnterpriseBillingWin
                 var allCustomers = new Stakeholder
                 {
                     StakeholderId = -1,
-                    Name = "-- All Customers --",
+                    Name = "-- Select Customer --",
                     Type = StakeholderType.Buyer
                 };
                 _stakeholders.Insert(0, allCustomers);
@@ -75,14 +90,6 @@ namespace OmEnterpriseBillingWin
 
             dgvOrders.Columns.Add(new DataGridViewTextBoxColumn
             {
-                Name = "CustomerName",
-                HeaderText = "Customer",
-                DataPropertyName = "Stakeholder.Name",
-                Width = 200
-            });
-
-            dgvOrders.Columns.Add(new DataGridViewTextBoxColumn
-            {
                 Name = "GrandTotal",
                 HeaderText = "Total Amount",
                 DataPropertyName = "GrandTotal",
@@ -100,31 +107,25 @@ namespace OmEnterpriseBillingWin
 
             dgvOrders.SelectionMode = DataGridViewSelectionMode.FullRowSelect;
             dgvOrders.MultiSelect = false;
-            dgvOrders.SelectionChanged += DgvOrders_SelectionChanged;
-            dgvOrders.DoubleClick += DgvOrders_DoubleClick;
         }
 
         private async void cboStakeholders_SelectedIndexChanged(object sender, EventArgs e)
         {
-            if (cboStakeholders.SelectedValue == null) return;
+            if (cboStakeholders.SelectedValue == null || (int)cboStakeholders.SelectedValue == -1)
+            {
+                dgvOrders.DataSource = null;
+                lblOrderCount.Text = "Total Orders: 0";
+                lblTotalAmount.Text = "Total Amount: $0.00";
+                return;
+            }
 
             var stakeholderId = (int)cboStakeholders.SelectedValue;
 
             try
             {
-                if (stakeholderId == -1)
-                {
-                    // Load all orders (you'll need to implement this method)
-                    _orders = new List<SaleOrder>(); // For now, empty list
-                    lblOrderCount.Text = "Total Orders: 0";
-                }
-                else
-                {
-                    _orders = await _saleService.GetSaleOrdersByStakeholderAsync(stakeholderId);
-                    lblOrderCount.Text = $"Total Orders: {_orders.Count}";
-                }
+                _orders = await _saleService.GetSaleOrdersByStakeholderAsync(stakeholderId);
+                lblOrderCount.Text = $"Total Orders: {_orders.Count}";
 
-                dgvOrders.DataSource = null;
                 dgvOrders.DataSource = _orders;
 
                 // Update summary
@@ -154,7 +155,7 @@ namespace OmEnterpriseBillingWin
             ViewSelectedOrder();
         }
 
-        private async void btnViewOrder_Click(object sender, EventArgs e)
+        private void btnViewOrder_Click(object sender, EventArgs e)
         {
             ViewSelectedOrder();
         }
@@ -163,21 +164,17 @@ namespace OmEnterpriseBillingWin
         {
             if (dgvOrders.SelectedRows.Count == 0) return;
 
-            var selectedOrder = (SaleOrder)dgvOrders.SelectedRows[0].DataBoundItem;
-
             try
             {
-                // Load full order details
-                var fullOrder = await _saleService.GetSaleOrderByIdAsync(selectedOrder.OrderId);
-                if (fullOrder != null)
-                {
-                    var viewForm = new SaleForm(fullOrder);
-                    viewForm.ShowDialog();
-                }
+                var selectedOrder = (SaleOrder)dgvOrders.SelectedRows[0].DataBoundItem;
+
+                // For now, just show a message - implement full view later
+                MessageBox.Show($"Viewing Order: {selectedOrder.OrderNumber}\nTotal: {selectedOrder.GrandTotal:C2}",
+                    "Order Details", MessageBoxButtons.OK, MessageBoxIcon.Information);
             }
             catch (Exception ex)
             {
-                MessageBox.Show($"Error loading order details: {ex.Message}", "Error", MessageBoxButtons.OK, MessageBoxIcon.Error);
+                MessageBox.Show($"Error viewing order: {ex.Message}", "Error", MessageBoxButtons.OK, MessageBoxIcon.Error);
             }
         }
 

@@ -1,4 +1,4 @@
-namespace OmEnterpriseBillingWin
+﻿namespace OmEnterpriseBillingWin
 {
     partial class OrderManagementForm
     {
@@ -52,7 +52,6 @@ namespace OmEnterpriseBillingWin
             this.btnRefresh.TabIndex = 2;
             this.btnRefresh.Text = "Refresh";
             this.btnRefresh.UseVisualStyleBackColor = true;
-            this.btnRefresh.Click += new System.EventHandler(this.btnRefresh_Click);
             // 
             // label1
             // 
@@ -71,7 +70,6 @@ namespace OmEnterpriseBillingWin
             this.cboStakeholders.Name = "cboStakeholders";
             this.cboStakeholders.Size = new System.Drawing.Size(350, 23);
             this.cboStakeholders.TabIndex = 1;
-            this.cboStakeholders.SelectedIndexChanged += new System.EventHandler(this.cboStakeholders_SelectedIndexChanged);
             // 
             // groupBoxOrders
             // 
@@ -135,7 +133,6 @@ namespace OmEnterpriseBillingWin
             this.btnViewOrder.TabIndex = 3;
             this.btnViewOrder.Text = "View Order";
             this.btnViewOrder.UseVisualStyleBackColor = false;
-            this.btnViewOrder.Click += new System.EventHandler(this.btnViewOrder_Click);
             // 
             // btnClose
             // 
@@ -145,7 +142,6 @@ namespace OmEnterpriseBillingWin
             this.btnClose.TabIndex = 4;
             this.btnClose.Text = "Close";
             this.btnClose.UseVisualStyleBackColor = true;
-            this.btnClose.Click += new System.EventHandler(this.btnClose_Click);
             // 
             // OrderManagementForm
             // 
